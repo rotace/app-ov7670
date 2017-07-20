@@ -436,6 +436,14 @@ const struct regval_list ov7670_default_regs[] PROGMEM = {//from the linux drive
 };
 
 void error_led(void){
+  error_led(0);
+}
+void error_led(int val){
+  // DDRB |= 32;//make sure led is output
+  // while (1){//wait for reset
+  //   PORTB ^= 32;// toggle led
+  //   _delay_ms(100);
+  // }
   pinMode(13, OUTPUT);
   while(1){
     digitalWrite(13, HIGH);
@@ -445,8 +453,39 @@ void error_led(void){
   }
 }
 
+void twiStart(void){
+  TWCR = _BV(TWINT) | _BV(TWSTA) | _BV(TWEN);//send start
+  while (!(TWCR & (1 << TWINT)));//wait for start to be transmitted
+  if ((TWSR & 0xF8) != TW_START)
+    error_led();
+}
+
+void twiWriteByte(uint8_t DATA, uint8_t type){
+  TWDR = DATA;
+  TWCR = _BV(TWINT) | _BV(TWEN);
+  while (!(TWCR & (1 << TWINT))) {}
+  if ((TWSR & 0xF8) != type)
+    error_led();
+}
+
+void twiAddr(uint8_t addr, uint8_t typeTWI){
+  TWDR = addr;//send address
+  TWCR = _BV(TWINT) | _BV(TWEN);    /* clear interrupt to start transmission */
+  while ((TWCR & _BV(TWINT)) == 0); /* wait for transmission */
+  if ((TWSR & 0xF8) != typeTWI)
+    error_led();
+}
+
 void wrReg(uint8_t reg, uint8_t dat){
   uint8_t flag;
+  //send start condition
+  // twiStart();
+  // twiAddr(camAddr_WR, TW_MT_SLA_ACK);
+  // twiWriteByte(reg, TW_MT_DATA_ACK);
+  // twiWriteByte(dat, TW_MT_DATA_ACK);
+  // TWCR = (1 << TWINT) | (1 << TWEN) | (1 << TWSTO);//send stop
+  // _delay_ms(1);
+
   Wire.beginTransmission( camAddr_WR >> 1 );// 7bit addresss
   Wire.write(reg);
   Wire.write(dat);
@@ -454,8 +493,36 @@ void wrReg(uint8_t reg, uint8_t dat){
   delay(1);
 }
 
+static uint8_t twiRd(uint8_t nack){
+  if (nack){
+    TWCR = _BV(TWINT) | _BV(TWEN);
+    while ((TWCR & _BV(TWINT)) == 0); /* wait for transmission */
+    if ((TWSR & 0xF8) != TW_MR_DATA_NACK)
+      error_led();
+    return TWDR;
+  }
+  else{
+    TWCR = _BV(TWINT) | _BV(TWEN) | _BV(TWEA);
+    while ((TWCR & _BV(TWINT)) == 0); /* wait for transmission */
+    if ((TWSR & 0xF8) != TW_MR_DATA_ACK)
+      error_led();
+    return TWDR;
+  }
+}
+
 uint8_t rdReg(uint8_t reg){
   uint8_t dat;
+  // twiStart();
+  // twiAddr(camAddr_WR, TW_MT_SLA_ACK);
+  // twiWriteByte(reg, TW_MT_DATA_ACK);
+  // TWCR = (1 << TWINT) | (1 << TWEN) | (1 << TWSTO);//send stop
+  // _delay_ms(1);
+  // twiStart();
+  // twiAddr(camAddr_RD, TW_MR_SLA_ACK);
+  // dat = twiRd(1);
+  // TWCR = (1 << TWINT) | (1 << TWEN) | (1 << TWSTO);//send stop
+  // _delay_ms(1);
+
   Wire.beginTransmission( camAddr_RD >> 1 );// 7bit address
   Wire.write(reg);
   Wire.endTransmission();
@@ -488,12 +555,20 @@ void setRes(void){
 
 void camInit(void){
   wrReg(0x12, 0x80);
+  // _delay_ms(100);
   delay(100);
   wrSensorRegs8_8(ov7670_default_regs);
   wrReg(REG_COM10, 32);//PCLK does not toggle on HBLANK.
 }
 
 void arduinoUnoInit(void) {
+  // cli();//disable interrupts
+  // noInterrupts();
+
+  // // pinMode
+  // DDRB |= (1 << 3);//pin 11 (OUTPUT=1)
+  // DDRC &= ~0b00001111;//low d0-d3 camera (INPUT=0)
+  // DDRD &= ~0b11111100;//d7-d4 and interrupt pins (INPUT=0)
   pinMode(11, OUTPUT);
   pinMode(13, OUTPUT);
 
@@ -501,46 +576,72 @@ void arduinoUnoInit(void) {
   // * This will be on pin 11*/
   // Fast PWM, No Prescaling, Compare Match...Freq=F_CPU/(N*(1+TOP))/2 <-toggle
   ASSR &= ~(_BV(EXCLK) | _BV(AS2));// No Async, No External Clock
-  TCCR2A = _BV(COM2A0) | _BV(WGM21) | _BV(WGM20);// FastPWM, Compare Match(toggle)
-  TCCR2B = _BV(WGM22)  | _BV(CS20);// TOP=OCR2A, No Prescaling(N=1)
+  TCCR2A = (1 << COM2A0) | (1 << WGM21) | (1 << WGM20);// FastPWM, Compare Match(toggle)
+  TCCR2B = (1 << WGM22) | (1 << CS20);// TOP=OCR2A, No Prescaling(N=1)
   OCR2A = 0;// TOP=0CR2A=0
   delay(3000);
 
+  //   //set up twi for 100khz
+  // TWSR &= ~3;//disable prescaler for TWI
+  // TWBR = 72;//set to 100khz
   Wire.begin();// master mode
   pinMode(SDA, INPUT); //disable internal pull-up
   pinMode(SCL, INPUT); //disable internal pull-up
 
+  //   //enable serial
+  // UBRR0H = 0;
+  // UBRR0L = 1;//0 = 2M baud rate. 1 = 1M baud. 3 = 0.5M. 7 = 250k 207 is 9600 baud rate.
+  // UCSR0A |= 2;//double speed aysnc
+  // UCSR0B = (1 << RXEN0) | (1 << TXEN0);//Enable receiver and transmitter
+  // UCSR0C = 6;//async 1 stop bit 8bit char no parity bits
   Serial.begin(1000000, SERIAL_8N1);// 1Mbps, 8bit no parity 1 stop bit, async
 }
 
+// void smsg(const char * str){
+//   while(*str != 0) {
+//     while (!(UCSR0A & (1 << UDRE0)));
+//     UDR0 = *str; str++;
+//   }
+// }
+
+// void StringPgm(const char * str){
+//   do{
+//       while (!(UCSR0A & (1 << UDRE0)));//wait for byte to transmit
+//       UDR0 = pgm_read_byte_near(str);
+//       while (!(UCSR0A & (1 << UDRE0)));//wait for byte to transmit
+//   } while (pgm_read_byte_near(++str));
+// }
+
 static void captureImg(uint16_t wg, uint16_t hg){
   uint16_t y, x;
+  noInterrupts();
 
-  delay(100);
-  while (!(PIND & 0b1000));//wait for high
-  while ((PIND & 0b1000));//wait for low
+  //StringPgm(PSTR("*RDY*"));
+
+  while (!(PIND & 8));//wait for high
+  while ((PIND & 8));//wait for low
   UDR0 = 0xff; // Start Mark
 
-  noInterrupts();
   y = hg;
   while (y--){
         x = wg;
       //while (!(PIND & 256));//wait for high
     while (x--){
-      while ((PIND & 0b0100));//wait for low
-        while (!(UCSR0A & _BV(UDRE0) ));//wait for byte to transmit
-        UDR0 = (PINC & 0b00001111) | (PIND & 0b11110000);
-      while (!(PIND & 0b0100));//wait for high
-      while ((PIND & 0b0100));//wait for low
-      while (!(PIND & 0b0100));//wait for high
+      while ((PIND & 4));//wait for low
+        while (!(UCSR0A & (1 << UDRE0)));//wait for byte to transmit
+        UDR0 = (PINC & 15) | (PIND & 240);
+      while (!(PIND & 4));//wait for high
+      while ((PIND & 4));//wait for low
+      while (!(PIND & 4));//wait for high
     }
+    //  while ((PIND & 256));//wait for low
   }
   for( x=0; x<8; x++){ // End Mark
-    while (!(UCSR0A & _BV(UDRE0) ));//wait for byte to transmit
-      UDR0 = 0;
+    while (!(UCSR0A & (1 << UDRE0)));//wait for byte to transmit
+      UDR0 = 0; //(PINC & 15) | (PIND & 240);
   }
-  interrupts();
   delay(100);
+  interrupts();
 }
 
 void setup(){
@@ -552,115 +653,6 @@ void setup(){
   wrReg(0x11, 11); //Earlier it had the value: wrReg(0x11, 12); New version works better for me :) !!!!
 }
 
-int address  = 0;    // I2C address
-int data = 0;   // I2C data
-int inByte = 0;         // incoming serial byte
-int flag = 0;
-String inString = "";    // string to hold input
-String cmdarg1 = "";
-String cmdarg2 = "";
-String arg1 = "";
-String arg2 = "";
-int arglen1 =0;
-int arglen2 =0;
-char argbyte1[10];
-char argbyte2[10];
-int inChar;
-char *endptr;
-byte x = 0;
-
-void valInit(){
-  inString = "";
-  inChar = 0;
-  cmdarg1 = "" ;
-  cmdarg2 = "" ;
-  arg1 = "" ;
-  arg2 = "" ;
-  arglen1 =0;
-  arglen2 =0;
-  data = 0;
-}
-
-void communicate(){
-  //Command input
-  inChar == 0 ;
-  while (inChar != '\n' ) {
-    if (Serial.available()) {
-      inChar = Serial.read();
-      inString += (char)inChar;
-    }
-  }
-
-  // inString.trim();
-  if(inString[0] == 'w' | inString[0] == 'W')
-  {
-    if(inString.length() != 6){
-      Serial.print(inString.length());
-      Serial.println(": Wrong Char Size!");
-
-    }else{
-      inString.toCharArray(argbyte1, 3, 1);
-      inString.toCharArray(argbyte2, 3, 3);
-
-      address = strtol(argbyte1, NULL, 16);
-      data = strtol(argbyte2, NULL, 16);
-
-      Wire.beginTransmission(0x21); // write 0x42 read 0x43
-      Wire.write(address);        // sends address
-      Wire.write(data);              // sends data
-      flag = Wire.endTransmission();    // stop transmitting
-
-      Serial.print(inString);
-      Serial.print(" Ad=");
-      Serial.print(address,HEX);
-      Serial.print(" Dt=");
-      Serial.print(data,HEX);
-      Serial.print(" flag=");
-      Serial.println(flag,DEC);
-
-      delay(10);
-    }
-
-  }
-  else if (inString[0] == 'r' | inString[0] == 'R')
-  {
-    if(inString.length() != 4){
-      Serial.print(inString.length());
-      Serial.println(": Wrong Char Size!");
-
-    }else{
-      inString.toCharArray(argbyte1, 3, 1);
-      address = strtol(argbyte1, NULL, 16);
-
-      Wire.beginTransmission(0x21); // write 0x42 read 0x43
-      Wire.write(address);        // sends address
-      flag = Wire.endTransmission();    // stop transmitting
-
-      Wire.requestFrom(0x21, 1);
-      data = Wire.read();
-
-      Serial.print(inString);
-      Serial.print(" Ad=");
-      Serial.print(address,HEX);
-      Serial.print(" Dt=");
-      Serial.print(data,HEX);
-      Serial.print(" flag=");
-      Serial.println(flag,DEC);
-
-      delay(50);
-    }
-
-  }else{
-    Serial.println("Syntax Error");
-  }
-
-  valInit();
-}
-
 void loop(){
-  if(Serial.available()){
-    communicate();
-  }else{
-    captureImg(320, 240);
-  }
+  captureImg(320, 240);
 }
