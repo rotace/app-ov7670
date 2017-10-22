@@ -81,20 +81,17 @@ class MainForm(QtWidgets.QMainWindow, main_window.Ui_MainWindow):
         imgbuf=self.imgbuf_list.pop(0)
 
         size_dict = dict(zip(size_head, size_list[1]))
-        mode_dict = dict(zip(mode_head, mode_list[0]))
+        mode_dict = dict(zip(mode_head, mode_list[1]))
         w=size_dict['w']
         h=size_dict['h']
         d=mode_dict['d']
         qt_format = mode_dict['QtFormat']
 
-        if imgbuf[0:1]!=b'\xff': return # header
-        if imgbuf[-8:]!=b'\x00\x00\x00\x00\x00\x00\x00\x00': return # footer
+        print('updating image, size=' + str(len(imgbuf)) )
+        if len(imgbuf) != w*h*d:
+            return
 
-        print('updating image')
-        print(len(imgbuf[1:-8]))
-        # assert(len(imgbuf[1:-8])==h*w)
-        # self.image = np.fromstring(imgbuf[1:-8], dtype=np.uint8)
-        self.qimage = QtGui.QImage(imgbuf[1:-8], w, h, w*d, qt_format)
+        self.qimage = QtGui.QImage(imgbuf, w, h, w*d, qt_format)
         self.pixmap = QtGui.QPixmap.fromImage(self.qimage)
         self.pixitem.setPixmap(self.pixmap)
 
@@ -127,6 +124,7 @@ class Receiver(QtCore.QThread):
         self.stopped = False
         self.has_cmd = False
         self.is_txt = False
+        self.is_img = True
         self.command = ""
         self.mutex = QtCore.QMutex()
 
@@ -150,8 +148,8 @@ class Receiver(QtCore.QThread):
         imgbuf=[]
         txtbuf=[]
         while True:
-            if self.usbserial.inWaiting()<1:
-                if self.is_txt and self.has_cmd:
+            if self.usbserial.inWaiting()==0:
+                if not(self.is_img) and not(self.is_txt) and self.has_cmd:
                     self.usbserial.write(self.command.encode('utf-8'))
                     print(self.command)
                     self.command=""
@@ -161,27 +159,59 @@ class Receiver(QtCore.QThread):
             # print(self.usbserial.inWaiting())
             tmp = self.usbserial.read(self.usbserial.inWaiting())
 
-            if self.is_txt and tmp.startswith(b'\xff'):
-                print("getting image")
-                self.is_txt=False
+            while len(tmp):
+                if not(self.is_txt) and not(self.is_img):
+                    if tmp.startswith(b'\x02'):
+                        print("getting text")
+                        self.is_txt=True
+                        tmp=tmp[1:]
+                        continue
+                    elif tmp.startswith(b'\x00\xff\x00\x00\xff\x00\x00\xff\x00'):
+                        print("getting image")
+                        self.is_img=True
+                        tmp=tmp[9:]
+                        continue
+                    else:
+                        index = tmp.find(b'\x00\xff\xff\x00\xff\xff\x00\xff\xff')
+                        if index==-1:
+                            break
+                        else:
+                            tmp=tmp[index+1:]
+                            continue
 
-            if self.is_txt:
-                txtbuf.append(tmp)
-                if tmp.endswith(b'\n'):
-                    self.signalReceiveTxt.emit(b''.join(txtbuf).decode('utf-8'))
-                    txtbuf=[]
-                    # print(tmp.decode('utf-8'))
+                elif self.is_txt and not(self.is_img):
+                    index = tmp.find(b'\x03')
+                    if index==-1:
+                        txtbuf.append(tmp)
+                        break
+                    else:
+                        txtbuf.append(tmp[0:index])
+                        print(b''.join(txtbuf))
+                        self.signalReceiveTxt.emit(b''.join(txtbuf).decode('utf-8'))
+                        txtbuf=[]
+                        self.is_txt=False
+                        tmp=tmp[index+1:]
+                        continue
 
-            else:
-                imgbuf.append(tmp)
-                if tmp.endswith(b'\x00\x00\x00\x00\x00\x00\x00\x00'):
-                    self.mutex.lock()
-                    self.imgbuf_list.append(b''.join(imgbuf))
-                    imgbuf=[]
-                    # print(self.imgbuf_list[-1], len(self.imgbuf_list[-1]))
-                    self.mutex.unlock()
-                    self.signalReceiveImg.emit()
-                    self.is_txt=True
+                elif self.is_img and not(self.is_txt):
+                    index = tmp.find(b'\x00\xff\xff\x00\xff\xff\x00\xff\xff')
+                    if index==-1:
+                        imgbuf.append(tmp)
+                        break
+                    else:
+                        imgbuf.append(tmp[0:index])
+                        self.mutex.lock()
+                        self.imgbuf_list.append(b''.join(imgbuf))
+                        self.mutex.unlock()
+                        self.signalReceiveImg.emit()
+                        # print(b''.join(imgbuf))
+                        imgbuf=[]
+                        self.is_img=False
+                        tmp=tmp[index+9:]
+                        continue
+
+                else:
+                    assert(False)
 
         self.stop()
         self.finished.emit()

@@ -12,6 +12,21 @@
 
 #include <Wire.h>
 
+#define RRST 2
+#define RCK  3
+#define D0   A0
+#define D1   A1
+#define D2   A2
+#define D3   A3
+#define D4   4
+#define D5   5
+#define D6   6
+#define D7   7
+#define WRST  10
+#define WR    11
+#define VSYNC 12
+#define LED   13
+
 #define F_CPU 16000000UL
 #define vga   0
 #define qvga  1
@@ -149,7 +164,6 @@
 #define REG_HAECC6    0xa9  /* Hist AEC/AGC control 6 */
 #define REG_HAECC7    0xaa  /* Hist AEC/AGC control 7 */
 #define REG_BD60MAX         0xab  /* 60hz banding step limit */
-
 #define REG_GAIN    0x00  /* Gain lower 8 bits (rest in vref) */
 #define REG_BLUE    0x01  /* blue gain */
 #define REG_RED           0x02  /* red gain */
@@ -445,11 +459,11 @@ const struct regval_list ov7670_default_regs[] PROGMEM = {//from the linux drive
 };
 
 void error_led(void){
-  pinMode(13, OUTPUT);
+  pinMode(LED, OUTPUT);
   while(1){
-    digitalWrite(13, HIGH);
+    digitalWrite(LED, HIGH);
     delay(100);
-    digitalWrite(13, LOW);
+    digitalWrite(LED, LOW);
     delay(100);
   }
 }
@@ -496,24 +510,41 @@ void setRes(void){
 }
 
 void camInit(void){
-  wrReg(0x12, 0x80);// Register Reset
+  wrReg(0x12, 0x80);
   delay(100);
   wrSensorRegs8_8(ov7670_default_regs);
   wrReg(REG_COM10, 32);//PCLK does not toggle on HBLANK.
 }
 
 void arduinoUnoInit(void) {
-  pinMode(11, OUTPUT); //XCLK
-  pinMode(13, OUTPUT); //LED
+  pinMode(RRST, OUTPUT);
+  pinMode(RCK,  OUTPUT);
+  pinMode(LED,  OUTPUT);
+  pinMode(WR,   OUTPUT);
+  pinMode(WRST, OUTPUT);
+  pinMode(D0,   INPUT);
+  pinMode(D1,   INPUT);
+  pinMode(D2,   INPUT);
+  pinMode(D3,   INPUT);
+  pinMode(D4,   INPUT);
+  pinMode(D5,   INPUT);
+  pinMode(D6,   INPUT);
+  pinMode(D7,   INPUT);
+  pinMode(VSYNC,INPUT);
+
+  digitalWrite(RRST, HIGH);
+  digitalWrite(RCK,  HIGH);
+  digitalWrite(WR,   LOW );
+  digitalWrite(WRST, HIGH);
+  // analogWrite(RCK, 127);
 
   //   /* Setup the 8mhz PWM clock
-  // * This will be on digital pin 11 (XCLK)*/
+  // * This will be on digital pin 3 (RCK)*/
   // Fast PWM, No Prescaling, Compare Match...Freq=F_CPU/(N*(1+TOP))/2 <-toggle
-  ASSR &= ~(_BV(EXCLK) | _BV(AS2));// No Async, No External Clock
-  TCCR2A = _BV(COM2A0) | _BV(WGM21) | _BV(WGM20);// FastPWM, Compare Match(toggle)
-  TCCR2B = _BV(WGM22)  | _BV(CS20);// TOP=OCR2A, No Prescaling(N=1)
-  OCR2A = 0;// TOP=0CR2A=0
-  delay(3000);
+  // ASSR &= ~(_BV(EXCLK) | _BV(AS2));// No Async, No External Clock
+  // TCCR2A = _BV(COM2B0) | _BV(WGM21) | _BV(WGM20);// FastPWM, Compare Match(toggle)
+  // TCCR2B = _BV(WGM22)  | _BV(CS20);// TOP=OCR2B, No Prescaling(N=1)
+  // OCR2B = 0;// TOP=0CR2B=0
 
   Wire.begin();// master mode
   pinMode(SDA, INPUT); //disable internal pull-up
@@ -523,11 +554,32 @@ void arduinoUnoInit(void) {
 }
 
 static void captureImg(uint16_t wg, uint16_t hg){
-  uint16_t y, x;
-
+  uint16_t x, y;
   delay(100);
-  while (!(PIND & 0b1000));//wait for high (digital pin 3 :VSYNC)
-  while ((PIND & 0b1000));//wait for low (digital pin 3 :VSYNC)
+
+  // WRST
+  digitalWrite(WR,   LOW); //disable
+  delay(1);
+  digitalWrite(WRST, LOW); //enable
+  delay(1);
+  digitalWrite(WRST, HIGH);//disable
+
+  // write fifo
+  while( digitalRead(VSYNC)==LOW);
+  while( digitalRead(VSYNC)==HIGH);
+  digitalWrite(WR,   HIGH);//enable
+  while( digitalRead(VSYNC)==LOW);
+  digitalWrite(WR,   LOW); //disable
+
+  // RRST
+  digitalWrite(RRST, LOW);//enable
+  delay(1);
+  digitalWrite(RCK,  HIGH);
+  delay(1);
+  digitalWrite(RCK,  LOW);
+  delay(1);
+  digitalWrite(RRST, HIGH); //disable
+
   // Start Mark
   for( x=0; x<3; x++){
     while (!(UCSR0A & _BV(UDRE0) ));//wait for byte to transmit
@@ -538,21 +590,49 @@ static void captureImg(uint16_t wg, uint16_t hg){
     UDR0 = 0;
   }
 
-  noInterrupts();
+  // reset FIFO
+
+  // digitalWrite(RRST, HIGH);
+  // while(!(PIND & 0b1000)); //wait for high (digital pin 3:RCK)
+  // while((PIND & 0b1000)); //wait for low (digital pin 3:RCK)
+  // while(!(PIND & 0b1000)); //wait for high (digital pin 3:RCK)
+  // digitalWrite(RRST, LOW);
+  // while((PIND & 0b1000)); //wait for low (digital pin 3:RCK)
+  // while(!(PIND & 0b1000)); //wait for high (digital pin 3:RCK)
+  // while((PIND & 0b1000)); //wait for low (digital pin 3:RCK)
+  // digitalWrite(RRST, HIGH);
+
+  // digitalWrite(RCK, HIGH); digitalWrite(RRST, HIGH);
+  // digitalWrite(RCK, HIGH); digitalWrite(RRST, LOW );
+  // digitalWrite(RCK, LOW ); digitalWrite(RRST, LOW );
+  // digitalWrite(RCK, HIGH); digitalWrite(RRST, LOW );
+  // digitalWrite(RCK, LOW ); digitalWrite(RRST, LOW );
+  // digitalWrite(RCK, LOW ); digitalWrite(RRST, HIGH);
+
+  // digitalWrite(RCK, HIGH); digitalWrite(RRST, HIGH);
+  // digitalWrite(RCK, LOW ); digitalWrite(RRST, HIGH);
+  // digitalWrite(RCK, HIGH); digitalWrite(RRST, HIGH);
+  // while (!(PIND & 0b1000));//wait for high (digital pin 3 :VSYNC)
+  // while ((PIND & 0b1000));//wait for low (digital pin 3 :VSYNC)
+
+  // read fifo
   y = hg;
   while (y--){
-    // x = wg;
         x = wg*2;
-        //while (!(PIND & 256));//wait for high
     while (x--){
-      while ((PIND & 0b0100));//wait for low (digital pin 2 :PCLK)
-        while (!(UCSR0A & _BV(UDRE0) ));//wait for byte to transmit
-        UDR0 = (PINC & 0b00001111) | (PIND & 0b11110000);
-      while (!(PIND & 0b0100));//wait for high (digital pin 2 :PCLK)
+      // while((PIND & 0b1000)); //wait for low (digital pin 3:RCK)
+      // while(digitalRead(RCK)==LOW);
+      digitalWrite(RCK, HIGH);
+      // while ((PIND & 0b0100));//wait for low (digital pin 2 :PCLK)
+      while (!(UCSR0A & _BV(UDRE0) ));//wait for byte to transmit
+      UDR0 = (PINC & 0b00001111) | (PIND & 0b11110000);
+      // while(!(PIND & 0b1000)); //wait for high (digital pin 3:RCK)
+      // while(digitalRead(RCK)==HIGH);
+      digitalWrite(RCK, LOW);
+      // while (!(PIND & 0b0100));//wait for high (digital pin 2 :PCLK)
       // while ((PIND & 0b0100));//wait for low (digital pin 2 :PCLK)
       // while (!(PIND & 0b0100));//wait for high (digital pin 2 :PCLK)
     }
-    //  while ((PIND & 256));//wait for low
   }
   // End Mark
   for( x=0; x<3; x++){
@@ -563,8 +643,8 @@ static void captureImg(uint16_t wg, uint16_t hg){
     while (!(UCSR0A & _BV(UDRE0) ));//wait for byte to transmit
     UDR0 = 0xff;
   }
-  interrupts();
   delay(100);
+  delay(2000);
 }
 
 void setup(){
@@ -664,6 +744,15 @@ void communicate(){
 
       delay(50);
     }
+
+  }else if (inString[0] == 'c' | inString[0] == 'C' )
+  {
+    if(inString[1] == 'w' ){
+      if(inString[2] == 'h' ) digitalWrite(WR, HIGH);
+      if(inString[2] == 'l' ) digitalWrite(WR, LOW);
+    }
+    Serial.print("finish ");
+    Serial.print(inString);
 
   }else{
     Serial.print("Syntax Error");
